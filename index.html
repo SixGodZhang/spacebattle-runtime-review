@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpaceBattle 运行时 + 源码评审</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --bg2: #121a2e;
+    --card: #161f35;
+    --line: #2a3658;
+    --text: #e8eefc;
+    --muted: #9aa8c7;
+    --p0: #ff5d6c;
+    --p1: #f5b942;
+    --p2: #7d8fb3;
+    --ok: #3dcaa0;
+    --accent: #6ea8ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 16px/1.65 "IBM Plex Sans", "Noto Sans SC", system-ui, sans-serif; }
+  a { color: var(--accent); }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(11,16,32,.92); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 20px;
+  }
+  header .wrap { max-width: 980px; margin: 0 auto; display: flex; justify-content: space-between; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .02em; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  .hero { padding: 28px 0 8px; }
+  .hero h2 { font-size: 34px; line-height: 1.2; margin: 0 0 10px; }
+  .hero .lead { color: var(--muted); max-width: 70ch; }
+  .shot { width: 100%; border-radius: 12px; border: 1px solid var(--line); margin: 18px 0 8px; display: block; background: #000; }
+  .caption { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
+  nav { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 28px; }
+  nav a { text-decoration: none; color: var(--text); background: var(--card); border: 1px solid var(--line); padding: 6px 10px; border-radius: 999px; font-size: 13px; }
+  nav a:hover { border-color: var(--accent); }
+  section { margin: 0 0 36px; }
+  h3 { font-size: 22px; margin: 0 0 12px; }
+  h4 { font-size: 17px; margin: 22px 0 8px; }
+  .note, .okbox, .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .note { border-left: 3px solid var(--accent); }
+  .okbox { border-left: 3px solid var(--ok); }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; vertical-align: middle; margin-right: 6px; }
+  .p0 { background: #3a1520; color: var(--p0); }
+  .p1 { background: #3a2e12; color: var(--p1); }
+  .p2 { background: #1d2740; color: var(--p2); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 12px 0; }
+  th, td { border-top: 1px solid var(--line); text-align: left; padding: 8px 10px; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  ul { padding-left: 1.2em; }
+  li { margin: 6px 0; }
+  code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; background: #0a1224; padding: 1px 5px; border-radius: 5px; }
+  ol { padding-left: 1.3em; }
+  footer { color: var(--muted); font-size: 13px; padding: 24px 0 48px; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>SpaceBattle · 运行时 + 源码评审</h1>
+    <p>2026-08-25 · 只评不改 · 对照 500v500 实机</p>
+  </div>
+</header>
+<main class="wrap">
+  <div class="hero">
+    <h2>sim 没问题，该改的是爆炸、表现层和工具链</h2>
+    <p class="lead">Linux 上用 Godot 4.7.1 Mono 跑通了大会战。日志：<code>GSB battle started: 500 vs 500</code>。sim 约 0.3ms/步，卡的是画面。下面把「这台机器没 GPU」和「代码真问题」分开。</p>
+    <img class="shot" src="battle.png" alt="500v500 大会战实机截图">
+    <p class="caption">实机截图：500v500 中盘。交火线很多，大爆炸和烟火偏少，和 P0 缺爆炸映射对得上。「我方舰队 (83)」是开打后战斗机先死，不是列表 bug。</p>
+    <nav>
+      <a href="#env">环境 vs 代码</a>
+      <a href="#bugs">Runtime bugs</a>
+      <a href="#perf">Performance</a>
+      <a href="#port">Portability</a>
+      <a href="#ux">UX</a>
+      <a href="#arch">Architecture</a>
+      <a href="#ok">已核对</a>
+      <a href="#order">动手顺序</a>
+    </nav>
+  </div>
+
+  <section id="env">
+    <h3>先把环境和代码分开</h3>
+    <div class="note">下面这些是本机没有 GPU / 没有声卡的结果，<strong>不是游戏逻辑 bug</strong>。不要据此改 sim 或特效语义。</div>
+    <table>
+      <tr><th>现象</th><th>证据</th><th>含义</th></tr>
+      <tr><td>Vulkan 缺失 → OpenGL 3 / llvmpipe</td><td><code>godot.log</code> L2–L10</td><td>软件光栅。MEMORY 的 144 FPS / 7–9ms 是 Windows 真 GPU 数字。</td></tr>
+      <tr><td>V-Sync unsupported</td><td>log L8–L9</td><td>驱动不支持改 V-Sync，不是代码写死 144。</td></tr>
+      <tr><td>ALSA no card → dummy audio</td><td>log L11–L22</td><td>没声卡。以后接上音频池，这台机器也听不到。</td></tr>
+      <tr><td><code>fps=21–36</code> · <code>sim=0.25–0.41ms/step</code> · <code>frame=53–80ms</code></td><td>log L27–L30</td><td><strong>sim 很便宜</strong>；帧时间是 presentation + llvmpipe。</td></tr>
+      <tr><td>截图左右灰边</td><td>viewport 1920×1080，启动 1280×720</td><td>16:9 画布 + 正方形地图 + stretch expand，不是渲染错误。</td></tr>
+    </table>
+    <p>运行时真正属于代码的警告只有两类：<code>Main.tscn</code> 无效 UID（已回退到路径，能开）；<code>particle config missing: exp_destruction_placed</code> / <code>exp_sparkburst</code>（爆炸缺段）。</p>
+  </section>
+
+  <section id="bugs">
+    <h3>1. Runtime bugs</h3>
+
+    <div class="card">
+      <h4><span class="badge p0">P0</span> <code>EXP_DESTRUCTION_PLACED</code> 没有映射，连锁爆炸最常见的一步是空的</h4>
+      <ul>
+        <li>船体 <code>[explosions]</code> 共 841 步、14 个 EXP 名；<strong>exp_destruction_placed = 264 次（31%）</strong>，出现最多。</li>
+        <li><code>particleconfigs</code>（61）和 <code>explosions</code>（15）里都没有这个名字。这是 GSB 引擎内部 token，不是漏提取。</li>
+        <li><code>ExplosionDirector.Trigger</code> 对 blastglare / plumes / startbreakup 有特殊分支，没有这条，落到 <code>EmitterLibrary.Get</code> 后缓存 null。</li>
+        <li>影响：巡洋/护卫死亡脚本里大量定点爆炸不播。截图交火密、大爆炸少，对得上。</li>
+        <li>建议：按船体等级映射到已有 explosion set（战斗机 <code>exp_small</code>，护卫 <code>exp_frigate</code>，巡洋 <code>exp_medium2</code>）。写成数据表，不要再堆 switch。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h4><span class="badge p1">P1</span> <code>exp_sparkburst</code> 被当成粒子配置名，其实是 explosion set</h4>
+      <p><code>explosions.exp_sparkburst.emmiters = ["spark_burst"]</code>。特殊分支 <code>BurstEmitter("exp_sparkburst")</code> 绕过了 <code>PlaySetOrEmitter</code>。船体脚本只有 6 次，但路径是错的。删掉这个 case，走 generic 即可。</p>
+    </div>
+
+    <div class="card">
+      <h4><span class="badge p1">P1</span> 表现层时钟不跟 <code>SimSpeed</code>，4x 会看起来像 1x</h4>
+      <p>sim 用 <code>delta * speed</code> 推；爆炸、粒子、炮口焰、残骸都吃 Godot 帧 dt。倍速只加快逻辑。建议表现层吃 <code>simDt = paused ? 0 : delta * speed</code>，暂停时粒子也要停。</p>
+    </div>
+
+    <div class="card">
+      <h4><span class="badge p1">P1</span> <code>Start-ManualTest.ps1</code> 不转发 README 写的 <code>--case</code> / <code>--sim-bench</code></h4>
+      <p>脚本只组 <code>--path</code> 和可选 headless。CmdletBinding 下未声明的剩余参数还会直接报错。加 <code>ValueFromRemainingArguments</code>，Linux 启动脚本同样要接。</p>
+    </div>
+
+    <div class="card">
+      <h4><span class="badge p2">P2</span> <code>Main.tscn</code> UID 警告：sidecar 在，缓存不在</h4>
+      <p><code>Main.cs.uid</code> 就是 <code>uid://jtu8qdfaawvn</code>，不是过期 UID。<code>.godot/</code> 没有 <code>uid_cache.bin</code>。能进战斗。删残留 <code>Main.gd.uid</code>；启动前 <code>godot --import --headless --quit</code>，或文档写明「无缓存走路径」。</p>
+    </div>
+
+    <div class="card">
+      <h4><span class="badge p2">P2</span> <code>RequestRestartCurrent</code> 永远重开大会战</h4>
+      <p>Debug 菜单在用例里点「重开」会丢掉当前 case。记 <code>_currentCase = -1 | 0..11</code>。</p>
+    </div>
+
+    <div class="card">
+      <h4><span class="badge p2">P2</span> <code>--auto-screenshot</code> 每帧扫一遍命令行</h4>
+      <p><code>_Ready</code> 解析一次，热路径只看字段。</p>
+    </div>
+  </section>
+
+  <section id="perf">
+    <h3>2. Performance</h3>
+    <div class="note">本机数字用来证明瓶颈在哪一层。优化目标仍是 Windows GPU 基线（1000 舰 144fps / 7–9ms）和 G5（4x 时 1% low ≥ 50）。</div>
+
+    <div class="card">
+      <h4><span class="badge p1">P1</span> 已证实：sim 便宜，帧时间在 presentation / GPU</h4>
+      <p>sim 0.25–0.41ms/step，远低于 2.5ms 预算。HUD 只显示 FPS + sim ms，没有 frame ms / 粒子占用。建议 HUD 加上 <code>TimeProcess</code>、<code>ParticlePool</code> 占用、MultiMesh instance 数。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> <code>FleetRenderer</code> 每帧全量回写船体 / 炮塔 / 辉光 / 护盾</h4>
+      <p>含已死、scale=0 的 hulk。没有 <code>VisibleInstanceCount</code> 裁剪。1000 舰 ×（船体+炮塔+glow+4 象限盾）每帧 C# → MultiMesh。建议活船/可见船才写；辉光用累计 sim 时间；盾闪只遍历 <code>_shieldFlash[s] &gt; 0</code>。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> <code>ParticlePool</code> 8192 槽，<code>LoadScale</code> 从未接线</h4>
+      <p>G5 特效预算阀是空的。饱和时 <code>Spawn</code> 直接 return，新爆炸被静默丢掉。按占用下调 Low 优先级；测试用例保持 1.0。不要先上调 Capacity。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> <code>BattleView</code> 对每发弹走立即模式 <code>DrawLine</code> / <code>DrawCircle</code></h4>
+      <p>截图中场密线就是这个层。改 MultiMesh，或至少按相机视口裁剪。这是 G5 离屏降频的第一步。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p2">P2</span> 4x + 掉帧时 <code>MaxStepsPerFrame=8</code> 会丢模拟时间</h4>
+      <p>21fps × 4x ≈ 11.4 步，clamp 到 8 后 accumulator 清零，越卡越慢。4x 验收先在能稳住 60 的 GPU 上做。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p2">P2</span> GUI 热路径有分配；<code>Main</code> 还留着 Node-per-ship 回退</h4>
+      <p>小地图可降到 10Hz；舰队列表用脏标记。没有 <code>db.json</code> 时会走 250×2 方块船 / 30Hz。删回退或挪到 tools/。</p>
+    </div>
+  </section>
+
+  <section id="port">
+    <h3>3. Portability</h3>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> 工具链写死 win64，Linux 靠 symlink 才 restore</h4>
+      <p><code>Start-ManualTest.ps1</code> 和 <code>NuGet.Config</code> 都指向 <code>Godot_v4.7.1-stable_mono_win64</code>。探测操作系统，Linux 用 linux x86_64 路径；加 <code>scripts/start-manual-test.sh</code>。不要把 symlink 当正式方案。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> MEMORY 写 <code>data/gsb/</code> 已 gitignore，实际没有</h4>
+      <p>风险：误提交几百 MB PNG/OGG；或别人 clone 后没有数据，静默掉进 FleetUnit 方块演示。补 <code>.gitignore</code>；缺 <code>db.json</code> 应报错退出。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p2">P2</span> 提取配置带 Windows 路径；文档假设 Python 3.14 + PowerShell</h4>
+      <p><code>gsb_extract.toml</code> 写死 <code>E:/game/...</code>。提交 <code>gsb_extract.toml.example</code>。文档加一节 Linux：<code>DOTNET_ROOT</code>、Godot 二进制、<code>--import</code>、无 GPU 时不要用帧率当回归。</p>
+    </div>
+  </section>
+
+  <section id="ux">
+    <h3>4. UX / product</h3>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> 暂停菜单两个按钮是置灰占位</h4>
+      <p>「游戏设置」「退出到主菜单」<code>Disabled = true</code>。G5 之前至少让退出 <code>Quit()</code>。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> OGG 已导出，游戏零播放</h4>
+      <p>约 80 条音效，全库无 <code>AudioStreamPlayer</code>。缺的是代码，不是资源。G5 做按事件的小池（开火 / 沉船 / 盾击中），上限 32 路。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p2">P2</span> 暂停冻结不完整 · 不能慢放 · 用例索引文档漂移</h4>
+      <ul>
+        <li>粒子、受击火、船体辉光没接暂停。</li>
+        <li><code>MinSpeed = 1.0</code>，验收弹道时不能慢放。建议 0.1。</li>
+        <li>代码权威是 12 个用例 0–11（6 = 护盾格挡）。MEMORY 写成 0–10，整体错位。<code>RunShieldCheck</code> 用 <code>Count - 6</code>，再加一条就会验错题。按名字找「护盾格挡」。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="arch">
+    <h3>5. Architecture</h3>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> <code>Main.cs</code> 同时是启动器、headless 工具、旧演示、战斗编排</h4>
+      <p>769 行。headless 验收搬到 <code>scripts/tools/</code>。<code>Main</code> 只做：读参数 → StartBattle → 每帧步进 + 暂停接线。AddChild 顺序用 <code>PresentationStack</code>。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p1">P1</span> EXP 名映射是硬编码 switch，和数据驱动规范打架</h4>
+      <p>一张表：<code>scriptName → { kind, name, scale }</code>。启动时校验每个船体 EXP 都能解析，缺的进 <code>--g0-check</code>，不要等第一艘船死才警告。</p>
+    </div>
+    <div class="card">
+      <h4><span class="badge p2">P2</span> 其它</h4>
+      <ul>
+        <li>sim 用了 <code>Mathf.Pi</code> / <code>Godot.Vector2</code>，抽纯 .NET 测试会痛。</li>
+        <li><code>FighterBlocker</code> 往全局 <code>db.Modules</code> 写，污染单例库。</li>
+        <li>G5 钩子只存在于注释和 <code>LoadScale</code> 字段。先做预算阀、视口裁剪、表现层 simDt，再谈 compute。</li>
+        <li>设计文档还写 <code>Ships.cs</code> / <code>Hud.cs</code>，实际是 <code>ShipStore</code> / <code>BattleGui</code>。<code>SimCore</code> 文件头步进顺序和真实 Step 不一致。</li>
+        <li>表现层魔法数分散，收到 <code>PresentationConfig</code>。</li>
+        <li>切 test case 会 <code>QueueFree</code> 再 new 全部 renderer，复用节点更顺。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="ok">
+    <h3>6. 已核对、本次不上升</h3>
+    <div class="okbox">
+      <ul>
+        <li>sim 没有节点泄漏。GUI 经 <code>IBattleContext</code> 读 SoA。</li>
+        <li><code>ParticlePool</code> 的 <code>VisibleInstanceCount</code> 用法是对的。</li>
+        <li>护盾象限偏移 <code>(-0.5,+0.5)·R</code>、alpha 混合、半径 0.8 与 MEMORY 一致，<strong>不要「修正」</strong>。</li>
+        <li>船体闪白走 instance color，没用 INSTANCE_CUSTOM。</li>
+        <li>用户暂停 vs Esc 菜单暂停，接线正确。缺的是粒子/受击层。</li>
+        <li><code>EmitterLibrary</code> 对真缺失配置 warn 一次 + 缓存 null，正确。问题在调用方给了错名字。</li>
+        <li>确定性：<code>--sim-bench</code> 仍是 sim 回归入口；表现层 RNG 不进 hash。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="order">
+    <h3>7. 建议动手顺序</h3>
+    <ol>
+      <li><span class="badge p0">P0</span> 给 <code>exp_destruction_placed</code> 做按等级映射；顺手修 <code>exp_sparkburst</code>。启动时打印未映射 EXP 名。</li>
+      <li><span class="badge p1">P1</span> 表现层改吃 <code>simDt</code>；粒子 / 受击火接暂停；<code>LoadScale</code> 按占用下调。</li>
+      <li><span class="badge p1">P1</span> Linux 启动脚本 + NuGet 不绑 win64；<code>.gitignore</code> 补 <code>data/gsb/</code>；脚本转发剩余参数。</li>
+      <li><span class="badge p1">P1</span> <code>FleetRenderer</code> 少写死船 / 非闪盾；弹道改批处理或裁剪。</li>
+      <li><span class="badge p1">P1</span> 对齐 MEMORY/README/代码的 0–11；<code>RunShieldCheck</code> 按名字选 case。</li>
+      <li><span class="badge p2">P2</span> 删 <code>Main.gd.uid</code> + FleetUnit 回退；Esc「退出」可点；音频池进 G5。</li>
+    </ol>
+    <div class="note"><strong>不要做：</strong>为这台 llvmpipe 机器「优化到 60fps」（会逼出错误的降质）；不要 fork Godot 来修 Vulkan / ALSA；不要把 <code>data/gsb</code> 整包提交进 git。</div>
+  </section>
+
+  <footer>
+    范围：只评、不改游戏代码。对照 godot.log、实机截图、RUN_STATUS 与仓库源码。<br>
+    启动：Godot 4.7.1.stable.mono Linux + .NET 8 · 1280×720 · 500 vs 500。
+  </footer>
+</main>
+</body>
+</html>
